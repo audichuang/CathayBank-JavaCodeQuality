@@ -20,7 +20,8 @@
                          displayName="API MsgID檢查" 
                          groupName="CathayBk規範檢查" 
                          enabledByDefault="true" 
-                         level="WARNING" 
+                         level="WARNING"
+                         shortName="ApiMsgIdInspection"
                          implementationClass="com.cathaybk.codingassistant.inspection.ApiMsgIdInspection"/>
                          
         <!-- 添加Service關聯檢查器 -->
@@ -28,7 +29,8 @@
                          displayName="Service關聯檢查" 
                          groupName="CathayBk規範檢查" 
                          enabledByDefault="true" 
-                         level="WARNING" 
+                         level="WARNING"
+                         shortName="ServiceLinkInspection"
                          implementationClass="com.cathaybk.codingassistant.inspection.ServiceLinkInspection"/>
     </extensions>
 

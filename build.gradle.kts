@@ -69,6 +69,19 @@ tasks {
         useJUnitPlatform()
     }
     
+    // 解決重複文件的問題
+    withType<Copy> {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+    
+    processResources {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+    
+    prepareSandbox {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+    
     // 跳過 buildSearchableOptions 任務
     named("buildSearchableOptions") {
         enabled = false
@@ -82,6 +95,17 @@ tasks {
         systemProperty("java.io.tmpdir", "${System.getProperty("user.home")}/temp")
         // 分配更多記憶體
         jvmArgs("-Xmx1g")
+        
+        // 如果需要，複製原有的plugin.xml到目標位置
+        doFirst {
+            val originPluginXml = file("src/main/resources/META-INF/plugin.xml")
+            val targetDir = file("${buildDir}/tmp/patchPluginXml")
+            if (originPluginXml.exists() && !targetDir.exists()) {
+                targetDir.mkdirs()
+                originPluginXml.copyTo(file("${targetDir}/plugin.xml"), overwrite = true)
+                println("已複製plugin.xml到${targetDir}/plugin.xml")
+            }
+        }
     }
     
     // 為所有 JavaExec 類型的任務設置系統屬性
@@ -150,6 +174,7 @@ tasks {
 // 配置 IntelliJ Platform 插件
 intellijPlatform {
     pluginConfiguration {
+        id.set("com.cathaybk.codingassistant")
         name.set("CathayBk Coding Assistant")
         version.set(project.version.toString())
         
@@ -169,7 +194,7 @@ intellijPlatform {
         
         ideaVersion {
             sinceBuild.set("231")
-            untilBuild.set("233.*")
+            untilBuild.set("243.*")
         }
         
         changeNotes.set("""
