@@ -1,0 +1,44 @@
+<idea-plugin>
+    <id>com.cathaybk.codingassistant</id>
+    <name>CathayBk Coding Assistant</name>
+    <vendor email="support@cathaybk.com" url="https://www.cathaybk.com">CathayBk</vendor>
+
+    <description><![CDATA[
+    國泰銀行程式碼助手，用於協助開發人員遵循公司的編碼標準和規範。
+    主要功能：
+    - 檢查Controller層API方法是否添加了msgID註解
+    - 自動關聯Controller的API方法與對應的Service實現
+    - 提供程式碼規範檢查並顯示警告
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 添加自定義檢查器 -->
+        <localInspection language="JAVA" 
+                         displayName="API MsgID檢查" 
+                         groupName="CathayBk規範檢查" 
+                         enabledByDefault="true" 
+                         level="WARNING" 
+                         implementationClass="com.cathaybk.codingassistant.inspection.ApiMsgIdInspection"/>
+                         
+        <!-- 添加Service關聯檢查器 -->
+        <localInspection language="JAVA" 
+                         displayName="Service關聯檢查" 
+                         groupName="CathayBk規範檢查" 
+                         enabledByDefault="true" 
+                         level="WARNING" 
+                         implementationClass="com.cathaybk.codingassistant.inspection.ServiceLinkInspection"/>
+    </extensions>
+
+    <actions>
+        <!-- 添加生成相關代碼的Action -->
+        <action id="com.cathaybk.codingassistant.actions.GenerateApiStructureAction" 
+                class="com.cathaybk.codingassistant.actions.GenerateApiStructureAction" 
+                text="生成API結構" 
+                description="生成API相關的Service和實現類">
+            <add-to-group group-id="GenerateGroup" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
