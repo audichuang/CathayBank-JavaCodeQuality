@@ -8,10 +8,17 @@ import com.intellij.util.IncorrectOperationException;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * 檢查 Controller 中的 API 方法是否有正確的 電文代號 註解
  */
 public class ApiMsgIdInspection extends AbstractBaseJavaLocalInspectionTool {
+
+    private static final Pattern API_ID_PATTERN = Pattern.compile("([A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+.*)");
 
     @NotNull
     @Override
@@ -53,14 +60,18 @@ public class ApiMsgIdInspection extends AbstractBaseJavaLocalInspectionTool {
 
         // 使用更寬鬆的正則表達式檢查格式：前面是電文代號格式，後面跟隨空格和說明文字
         // 允許前段由字母、數字和連字符組成，不強制特定格式
-        if (!docText.matches("(?s).*\\b[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+\\s+.+.*")) {
+        Matcher matcher = API_ID_PATTERN.matcher(docText);
+        if (!matcher.find()) {
             // 找不到符合格式的電文代號
             return new ProblemDescriptor[] {
                     createProblemDescriptor(method, manager, isOnTheFly)
             };
         }
 
-        return null;
+        // 有符合的電文代號，檢查是否需要同步到 Service
+        return new ProblemDescriptor[] {
+                createSyncProblemDescriptor(method, manager, isOnTheFly, matcher.group(1))
+        };
     }
 
     /**
@@ -90,6 +101,22 @@ public class ApiMsgIdInspection extends AbstractBaseJavaLocalInspectionTool {
                 "API方法缺少正確的電文代號註解，格式應為: XXX-X-XXXX 說明文字",
                 new AddApiIdDocFix(),
                 ProblemHighlightType.WARNING,
+                isOnTheFly);
+    }
+
+    /**
+     * 建立同步問題描述
+     */
+    private ProblemDescriptor createSyncProblemDescriptor(PsiMethod method, InspectionManager manager,
+            boolean isOnTheFly, String apiId) {
+        List<LocalQuickFix> fixes = new ArrayList<>();
+        fixes.add(new SyncApiIdQuickFix());
+
+        return manager.createProblemDescriptor(
+                method.getNameIdentifier(),
+                "您可以將電文代號 '" + apiId + "' 同步到關聯的 Service 和 ServiceImpl",
+                fixes.toArray(new LocalQuickFix[0]),
+                ProblemHighlightType.INFORMATION,
                 isOnTheFly);
     }
 
@@ -151,6 +178,52 @@ public class ApiMsgIdInspection extends AbstractBaseJavaLocalInspectionTool {
 
             String methodName = method.getName().toUpperCase();
             return "XXX-X-" + (className != null ? className : "") + "_" + methodName;
+        }
+    }
+
+    /**
+     * 同步電文代號到相關的 Service 和 ServiceImpl 的快速修復
+     */
+    private static class SyncApiIdQuickFix implements LocalQuickFix {
+        @NotNull
+        @Override
+        public String getName() {
+            return "同步電文代號到所有相關類";
+        }
+
+        @NotNull
+        @Override
+        public String getFamilyName() {
+            return "同步電文代號";
+        }
+
+        @Override
+        public void applyFix(@NotNull Project project, @NotNull ProblemDescriptor descriptor) {
+            PsiElement element = descriptor.getPsiElement();
+            if (element == null)
+                return;
+
+            PsiMethod method = (PsiMethod) element.getParent();
+            if (method == null)
+                return;
+
+            // 使用 IntelliJ 的反射機制，間接調用 SyncApiIdAction，避免依賴問題
+            try {
+                // 獲取 SyncApiIdAction 類
+                Class<?> syncActionClass = Class.forName("com.cathaybk.codingassistant.actions.SyncApiIdAction");
+                Object syncAction = syncActionClass.getDeclaredConstructor().newInstance();
+
+                // 調用 applyFix 方法
+                java.lang.reflect.Method applyFixMethod = syncActionClass.getMethod("applyFix", Project.class,
+                        ProblemDescriptor.class);
+                applyFixMethod.invoke(syncAction, project, descriptor);
+            } catch (Exception e) {
+                // 如果反射調用失敗，顯示錯誤消息
+                com.intellij.openapi.ui.Messages.showErrorDialog(
+                        project,
+                        "無法同步電文代號: " + e.getMessage(),
+                        "同步失敗");
+            }
         }
     }
 }

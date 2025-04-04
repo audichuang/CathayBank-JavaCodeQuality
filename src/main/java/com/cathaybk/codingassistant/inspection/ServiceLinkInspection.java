@@ -10,9 +10,12 @@ import com.intellij.psi.javadoc.PsiDocComment;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.ReferencesSearch;
 import com.intellij.psi.util.PsiTreeUtil;
+import com.intellij.psi.util.PsiUtil;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -104,7 +107,16 @@ public class ServiceLinkInspection extends AbstractBaseJavaLocalInspectionTool {
                     }
                 }
 
-                System.out.println("找到關聯的Controller 電文代號s: " + controllerApiIds.size() + " 個");
+                // 如果本身有電文代號，也應該提示同步到其他相關類
+                if (controllerApiIds.isEmpty() && hasApiIdFormat) {
+                    String currentApiId = extractApiIdFromDoc(docComment.getText());
+                    if (currentApiId != null) {
+                        System.out.println("從當前類獲取電文代號: " + currentApiId);
+                        controllerApiIds.put(className, currentApiId);
+                    }
+                }
+
+                System.out.println("找到關聯的Controller API IDs: " + controllerApiIds.size() + " 個");
                 for (Map.Entry<String, String> entry : controllerApiIds.entrySet()) {
                     System.out.println("方法: " + entry.getKey() + ", 電文代號: " + entry.getValue());
                 }
@@ -123,337 +135,362 @@ public class ServiceLinkInspection extends AbstractBaseJavaLocalInspectionTool {
     }
 
     /**
-     * 查找使用此Service的Controller方法及其電文代號
+     * 查找服務類對應的 Controller 電文代號
+     * 
+     * @param aClass Service 類
+     * @return 電文代號和描述的映射
      */
-    private Map<String, String> findControllerApiIds(PsiClass serviceClass) {
+    private Map<String, String> findControllerApiIds(PsiClass aClass) {
         Map<String, String> result = new HashMap<>();
-        Project project = serviceClass.getProject();
-        System.out.println("搜索使用 " + serviceClass.getName() + " 的Controller方法");
+        String className = aClass.getName();
+        if (className == null)
+            return result;
+
+        System.out.println("尋找 " + className + " 相關的 Controller 電文代號");
 
         try {
-            // 使用ReferencesSearch尋找所有引用
-            Collection<PsiReference> references = ReferencesSearch.search(serviceClass).findAll();
-            System.out.println("找到 " + references.size() + " 個引用");
+            // 1. 先檢查自身是否有 API ID
+            PsiDocComment docComment = aClass.getDocComment();
+            if (docComment != null) {
+                String docText = docComment.getText();
+                Matcher matcher = API_ID_PATTERN.matcher(docText);
+                if (matcher.find()) {
+                    String apiId = matcher.group(1);
+                    System.out.println("  類自身有電文代號: " + apiId);
+                    result.put(className, apiId);
+                    return result;
+                }
+            }
 
-            // 檢查方法引用
-            checkMethodReferences(references, serviceClass, result);
+            // 2. 如果這是一個實現類，檢查它實現的接口是否有 API ID
+            if (className.contains("Impl")) {
+                for (PsiClassType interfaceType : aClass.getImplementsListTypes()) {
+                    PsiClass interfaceClass = interfaceType.resolve();
+                    if (interfaceClass != null) {
+                        PsiDocComment interfaceDoc = interfaceClass.getDocComment();
+                        if (interfaceDoc != null) {
+                            String interfaceDocText = interfaceDoc.getText();
+                            Matcher matcher = API_ID_PATTERN.matcher(interfaceDocText);
+                            if (matcher.find()) {
+                                String apiId = matcher.group(1);
+                                System.out.println("  實現的接口有電文代號: " + apiId);
+                                result.put(interfaceClass.getName(), apiId);
+                                return result;
+                            }
+                        }
+                    }
+                }
+            }
 
-            // 檢查變量和字段引用
-            checkVariableReferences(references, serviceClass, result);
+            // 4. 查找引用 Service 的 Controller 方法
+            Collection<PsiReference> references = ReferencesSearch
+                    .search(aClass, GlobalSearchScope.projectScope(aClass.getProject())).findAll();
+            System.out.println("  找到 " + references.size() + " 個引用");
 
-            // 檢查方法參數引用
-            checkParameterReferences(references, serviceClass, result);
+            // 首先優先查找方法級別的引用和API ID
+            boolean foundMethodLevelApiId = false;
+            for (PsiReference reference : references) {
+                System.out.println("  檢查引用: " + reference.getElement().getText());
 
+                PsiMethod containingMethod = PsiTreeUtil.getParentOfType(reference.getElement(), PsiMethod.class);
+                if (containingMethod != null) {
+                    System.out.println("  引用在方法: " + containingMethod.getName() + " 中");
+
+                    PsiClass containingClass = containingMethod.getContainingClass();
+                    if (containingClass != null && containingClass.getName() != null) {
+                        String containingClassName = containingClass.getName();
+                        System.out.println("  方法所屬類: " + containingClassName);
+
+                        if (containingClassName.contains("Controller")) {
+                            // 檢查方法是否有API映射註解
+                            boolean isApiMethod = false;
+                            for (PsiAnnotation annotation : containingMethod.getModifierList().getAnnotations()) {
+                                String annotationName = annotation.getQualifiedName();
+                                if (annotationName != null &&
+                                        (annotationName.endsWith("Mapping") ||
+                                                annotationName.contains("RequestMapping") ||
+                                                annotationName.contains("GetMapping") ||
+                                                annotationName.contains("PostMapping"))) {
+                                    System.out.println("  發現API方法: " + containingMethod.getName());
+                                    isApiMethod = true;
+                                    break;
+                                }
+                            }
+
+                            if (!isApiMethod) {
+                                System.out.println("  方法不是API方法，跳過: " + containingMethod.getName());
+                                continue;
+                            }
+
+                            PsiDocComment methodDoc = containingMethod.getDocComment();
+                            if (methodDoc != null) {
+                                String methodDocText = methodDoc.getText();
+                                Matcher matcher = API_ID_PATTERN.matcher(methodDocText);
+                                if (matcher.find()) {
+                                    String apiId = matcher.group(1);
+                                    System.out.println("  找到 Controller 方法的電文代號: " + apiId);
+                                    result.put(containingMethod.getName(), apiId);
+                                    foundMethodLevelApiId = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. 如果沒有找到方法級別的API ID，嘗試從類名推導相關的 Controller 名稱
+            if (!foundMethodLevelApiId) {
+                String controllerName;
+                if (className.contains("Service")) {
+                    if (className.contains("Impl")) {
+                        // 從 ServiceImpl 去掉 "Impl" 和 "Service" 後加上 "Controller"
+                        controllerName = className.replace("ServiceImpl", "Controller");
+                        controllerName = controllerName.replace("Service", "");
+                    } else {
+                        // 從 Service 去掉 "Service" 後加上 "Controller"
+                        controllerName = className.replace("Service", "Controller");
+                    }
+                } else {
+                    // 如果不含 "Service"，直接加上 "Controller"
+                    controllerName = className + "Controller";
+                }
+
+                System.out.println("  推導可能的 Controller 名稱: " + controllerName);
+
+                // 在 Controller 層找相應的方法並獲取電文代號
+                Collection<PsiClass> controllers = findClassesByName(aClass.getProject(), controllerName);
+                if (controllers.isEmpty()) {
+                    System.out.println("  沒有找到名為 " + controllerName + " 的 Controller 類");
+
+                    // 嘗試查找所有 Controller 類
+                    controllers = findAllControllers(aClass.getProject());
+                    System.out.println("  找到 " + controllers.size() + " 個 Controller 類");
+
+                    if (controllers.isEmpty()) {
+                        return result;
+                    }
+                }
+
+                // 5. 對於每個 Controller，檢查其中調用 Service 的方法
+                if (result.isEmpty()) {
+                    System.out.println("  通過引用未找到電文代號，嘗試檢查所有 Controller");
+                    for (PsiClass controller : controllers) {
+                        System.out.println("  檢查 Controller: " + controller.getName());
+
+                        // 檢查方法
+                        for (PsiMethod method : controller.getMethods()) {
+                            System.out.println("  檢查方法: " + method.getName());
+
+                            // 檢查方法是否有API映射註解
+                            boolean isApiMethod = false;
+                            for (PsiAnnotation annotation : method.getModifierList().getAnnotations()) {
+                                String annotationName = annotation.getQualifiedName();
+                                if (annotationName != null &&
+                                        (annotationName.endsWith("Mapping") ||
+                                                annotationName.contains("RequestMapping") ||
+                                                annotationName.contains("GetMapping") ||
+                                                annotationName.contains("PostMapping"))) {
+                                    System.out.println("  發現API方法: " + method.getName());
+                                    isApiMethod = true;
+                                    break;
+                                }
+                            }
+
+                            if (!isApiMethod) {
+                                System.out.println("  方法不是API方法，跳過: " + method.getName());
+                                continue;
+                            }
+
+                            // 檢查方法文檔
+                            PsiDocComment methodDoc = method.getDocComment();
+                            if (methodDoc != null) {
+                                String methodDocText = methodDoc.getText();
+                                Matcher matcher = API_ID_PATTERN.matcher(methodDocText);
+                                if (matcher.find()) {
+                                    String apiId = matcher.group(1);
+                                    System.out.println("  方法文檔有電文代號: " + apiId);
+
+                                    // 檢查方法體中是否引用了 Service
+                                    boolean usesService = checkMethodUsesService(method, aClass);
+                                    if (usesService) {
+                                        System.out.println("  方法使用了該 Service");
+                                        result.put(method.getName(), apiId);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // 檢查方法體中是否引用了 Service，即使沒有 API ID
+                            boolean usesService = checkMethodUsesService(method, aClass);
+                            if (usesService) {
+                                System.out.println("  方法使用了該 Service，但沒有 API ID");
+                            }
+                        }
+
+                        if (!result.isEmpty()) {
+                            break;
+                        }
+                    }
+                }
+
+                // 6. 如果仍然找不到，嘗試檢查類級別的文檔（最後的選擇）
+                if (result.isEmpty()) {
+                    for (PsiClass controller : controllers) {
+                        // 檢查類級別的文檔
+                        PsiDocComment classDoc = controller.getDocComment();
+                        if (classDoc != null) {
+                            String classDocText = classDoc.getText();
+                            Matcher matcher = API_ID_PATTERN.matcher(classDocText);
+                            if (matcher.find()) {
+                                String apiId = matcher.group(1);
+                                System.out.println("  Controller 類文檔有電文代號: " + apiId);
+                                result.put(controller.getName(), apiId);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         } catch (Exception e) {
-            System.out.println("搜索引用時出錯: " + e.getMessage());
+            System.out.println("尋找 Controller 電文代號時出錯: " + e.getMessage());
             e.printStackTrace();
         }
 
-        // 如果沒有找到引用，嘗試搜索Java字面量
-        if (result.isEmpty() && serviceClass.getName() != null) {
-            System.out.println("沒有找到直接引用，嘗試搜索字段");
-            // 如果Service名稱是AbcService，搜索字符串"abcService"
-            String serviceFieldName = serviceClass.getName().substring(0, 1).toLowerCase()
-                    + serviceClass.getName().substring(1);
+        System.out.println("找到 " + result.size() + " 個關聯的 Controller API IDs");
+        return result;
+    }
 
-            // 直接搜索更寬泛的controller包名
-            searchForServiceUsageInControllers(project, serviceFieldName, result);
+    /**
+     * 查找項目中所有的 Controller 類
+     */
+    private Collection<PsiClass> findAllControllers(Project project) {
+        Collection<PsiClass> result = new ArrayList<>();
 
-            // 如果仍找不到，嘗試直接檢查所有的 Controller 方法調用
-            if (result.isEmpty()) {
-                System.out.println("嘗試檢查 Controller 調用 Service 的方法...");
-                searchAllControllerMethods(project, serviceClass, result);
+        try {
+            // 查找名字包含 "Controller" 的類
+            PsiClass[] controllers = JavaPsiFacade.getInstance(project).findClasses(
+                    "*Controller", GlobalSearchScope.projectScope(project));
+
+            for (PsiClass controller : controllers) {
+                result.add(controller);
             }
+
+            // 查找在 controller 包下的類
+            PsiClass[] controllerPackageClasses = JavaPsiFacade.getInstance(project).findClasses(
+                    "*.controller.*", GlobalSearchScope.projectScope(project));
+
+            for (PsiClass cls : controllerPackageClasses) {
+                if (!result.contains(cls)) {
+                    result.add(cls);
+                }
+            }
+
+            System.out.println("找到 " + result.size() + " 個controller包下的類");
+        } catch (Exception e) {
+            System.out.println("查找 Controller 類時出錯: " + e.getMessage());
         }
 
         return result;
     }
 
     /**
-     * 檢查所有方法引用
+     * 根據名稱查找類
      */
-    private void checkMethodReferences(Collection<PsiReference> references, PsiClass serviceClass,
-            Map<String, String> result) {
-        for (PsiReference reference : references) {
-            PsiElement element = reference.getElement();
-            System.out.println("檢查引用: " + element.getText());
+    private Collection<PsiClass> findClassesByName(Project project, String className) {
+        Collection<PsiClass> result = new ArrayList<>();
 
-            // 找到包含此引用的方法
-            PsiMethod method = PsiTreeUtil.getParentOfType(element, PsiMethod.class);
-            if (method == null) {
-                System.out.println("引用不在方法內，跳過");
-                continue;
-            }
+        try {
+            PsiClass[] classes = JavaPsiFacade.getInstance(project).findClasses(
+                    className, GlobalSearchScope.projectScope(project));
 
-            checkControllerMethod(method, serviceClass, result);
-        }
-    }
+            Collections.addAll(result, classes);
 
-    /**
-     * 檢查變量和字段引用
-     */
-    private void checkVariableReferences(Collection<PsiReference> references, PsiClass serviceClass,
-            Map<String, String> result) {
-        for (PsiReference reference : references) {
-            PsiElement element = reference.getElement();
+            // 如果沒有精確匹配，嘗試模糊匹配
+            if (result.isEmpty()) {
+                PsiClass[] fuzzyClasses = JavaPsiFacade.getInstance(project).findClasses(
+                        "*" + className + "*", GlobalSearchScope.projectScope(project));
 
-            // 檢查是否是字段或局部變量聲明
-            PsiVariable variable = PsiTreeUtil.getParentOfType(element, PsiVariable.class);
-            if (variable != null) {
-                System.out.println("找到變量聲明: " + variable.getName());
-
-                // 找到使用此變量的所有方法
-                Collection<PsiReference> variableReferences = ReferencesSearch.search(variable).findAll();
-                for (PsiReference varRef : variableReferences) {
-                    PsiElement varElement = varRef.getElement();
-                    PsiMethod method = PsiTreeUtil.getParentOfType(varElement, PsiMethod.class);
-                    if (method != null) {
-                        checkControllerMethod(method, serviceClass, result);
+                for (PsiClass cls : fuzzyClasses) {
+                    if (cls.getName() != null && cls.getName().contains(className)) {
+                        result.add(cls);
                     }
                 }
             }
+        } catch (Exception e) {
+            System.out.println("查找類時出錯: " + e.getMessage());
         }
+
+        return result;
     }
 
     /**
-     * 檢查參數引用
+     * 檢查方法是否使用了指定的 Service 類
      */
-    private void checkParameterReferences(Collection<PsiReference> references, PsiClass serviceClass,
-            Map<String, String> result) {
-        for (PsiReference reference : references) {
-            PsiElement element = reference.getElement();
-
-            // 檢查是否是參數聲明
-            PsiParameter parameter = PsiTreeUtil.getParentOfType(element, PsiParameter.class);
-            if (parameter != null) {
-                System.out.println("找到參數聲明: " + parameter.getName());
-
-                // 找到包含此參數的方法
-                PsiMethod method = PsiTreeUtil.getParentOfType(parameter, PsiMethod.class);
-                if (method != null) {
-                    checkControllerMethod(method, serviceClass, result);
-                }
-            }
-        }
-    }
-
-    /**
-     * 檢查方法是否是Controller方法並含有電文代號
-     */
-    private void checkControllerMethod(PsiMethod method, PsiClass serviceClass, Map<String, String> result) {
-        System.out.println("檢查方法: " + method.getName());
-
-        // 檢查方法是否在Controller中
-        PsiClass containingClass = method.getContainingClass();
-        if (containingClass == null) {
-            System.out.println("方法沒有包含類，跳過");
-            return;
-        }
-
-        String className = containingClass.getName();
-        if (className == null) {
-            System.out.println("類名為空，跳過");
-            return;
-        }
-
-        // 檢查是否是Controller類 (擴大匹配範圍)
-        boolean isController = className.contains("Controller") ||
-                (containingClass.getQualifiedName() != null &&
-                        containingClass.getQualifiedName().contains("controller"));
-
-        if (!isController) {
-            System.out.println("方法不在Controller中，跳過: " + className);
-            return;
-        }
-
-        System.out.println("發現Controller類: " + className);
-
-        // 檢查方法中使用了service的方法調用 - 對整個方法文本進行檢查，更寬鬆的檢測
-        String methodText = method.getText();
-        String serviceNameLowercaseFirst = serviceClass.getName().substring(0, 1).toLowerCase() +
-                serviceClass.getName().substring(1);
-        boolean usesService = methodText.contains(serviceNameLowercaseFirst);
-
-        if (!usesService) {
-            System.out.println("方法未直接使用Service，跳過");
-            return;
-        }
-
-        System.out.println("方法中使用了Service");
-
-        // 檢查方法是否有電文代號註解
-        PsiDocComment docComment = method.getDocComment();
-        if (docComment != null) {
-            String docText = docComment.getText();
-            System.out.println("Controller方法的文檔註解: " + docText);
-            Matcher matcher = API_ID_PATTERN.matcher(docText);
-            if (matcher.find()) {
-                String apiId = matcher.group(1);
-                System.out.println("找到電文代號: " + apiId + ", 方法: " + method.getName());
-                result.put(method.getName(), apiId);
-            } else {
-                System.out.println("未找到電文代號格式");
-            }
-        } else {
-            System.out.println("Controller方法沒有文檔註解");
-        }
-    }
-
-    /**
-     * 檢查代碼塊中是否使用了特定的Service
-     */
-    private boolean checkCodeBlockForServiceUse(PsiCodeBlock codeBlock, String serviceName) {
-        if (serviceName == null)
+    private boolean checkMethodUsesService(PsiMethod method, PsiClass serviceClass) {
+        if (method.getBody() == null)
             return false;
 
-        for (PsiStatement statement : codeBlock.getStatements()) {
-            String statementText = statement.getText();
-            String fieldName = serviceName.substring(0, 1).toLowerCase() + serviceName.substring(1);
-            if (statementText.contains(fieldName)) {
-                System.out.println("代碼塊中使用了Service: " + fieldName + " 在語句: " + statementText);
+        // 檢查方法參數
+        for (PsiParameter parameter : method.getParameterList().getParameters()) {
+            PsiType type = parameter.getType();
+            PsiClass parameterClass = PsiUtil.resolveClassInType(type);
+            if (parameterClass != null && parameterClass.equals(serviceClass)) {
                 return true;
             }
         }
-        return false;
-    }
 
-    /**
-     * 搜索使用Service的Controller
-     */
-    private void searchForServiceUsageInControllers(Project project, String serviceFieldName,
-            Map<String, String> result) {
-        System.out.println("搜索使用 " + serviceFieldName + " 字段的Controller");
-        try {
-            JavaPsiFacade psiFacade = JavaPsiFacade.getInstance(project);
-            GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
+        // 創建訪問器，檢查方法體中的引用
+        final boolean[] usesService = { false };
 
-            // 搜索Controller包下的類
-            PsiClass[] controllers = psiFacade.findClasses("*.controller.*", scope);
-            System.out.println("找到 " + controllers.length + " 個controller包下的類");
+        method.getBody().accept(new JavaRecursiveElementVisitor() {
+            @Override
+            public void visitReferenceExpression(PsiReferenceExpression expression) {
+                super.visitReferenceExpression(expression);
 
-            if (controllers.length == 0) {
-                // 如果找不到，嘗試直接按命名規則搜索
-                controllers = psiFacade.findClasses("*Controller", scope);
-                System.out.println("找到 " + controllers.length + " 個名稱包含Controller的類");
-            }
+                if (usesService[0])
+                    return; // 已經找到引用，不再繼續
 
-            checkControllersForServiceUsage(controllers, serviceFieldName, result);
-        } catch (Exception e) {
-            System.out.println("搜索Controller時出錯: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * 檢查控制器類中是否使用了服務
-     */
-    private void checkControllersForServiceUsage(PsiClass[] controllers, String serviceFieldName,
-            Map<String, String> result) {
-        for (PsiClass controller : controllers) {
-            System.out.println("檢查Controller: " + controller.getName());
-
-            // 檢查整個類的文本是否包含服務名
-            String classText = controller.getText();
-            if (classText.contains(serviceFieldName)) {
-                System.out.println("Controller文本中包含Service引用: " + serviceFieldName);
-
-                // 檢查所有方法
-                for (PsiMethod method : controller.getMethods()) {
-                    if (hasAPIMapping(method)) {
-                        System.out.println("檢查API方法: " + method.getName());
-
-                        // 檢查方法是否使用了service
-                        String methodText = method.getText();
-                        if (methodText.contains(serviceFieldName)) {
-                            System.out.println("方法 " + method.getName() + " 使用了 " + serviceFieldName);
-
-                            // 檢查電文代號
-                            PsiDocComment docComment = method.getDocComment();
-                            if (docComment != null) {
-                                String docText = docComment.getText();
-                                Matcher matcher = API_ID_PATTERN.matcher(docText);
-                                if (matcher.find()) {
-                                    String apiId = matcher.group(1);
-                                    System.out.println("找到電文代號: " + apiId + ", 方法: " + method.getName());
-                                    result.put(method.getName(), apiId);
-                                } else {
-                                    System.out.println("未找到電文代號格式");
-                                }
-                            } else {
-                                System.out.println("API方法沒有文檔註解");
-                            }
-                        }
+                PsiElement resolved = expression.resolve();
+                if (resolved instanceof PsiField) {
+                    PsiField field = (PsiField) resolved;
+                    PsiClass fieldType = PsiUtil.resolveClassInType(field.getType());
+                    if (fieldType != null && (fieldType.equals(serviceClass) ||
+                            (serviceClass.isInterface() && isImplementationOf(fieldType, serviceClass)))) {
+                        usesService[0] = true;
+                    }
+                } else if (resolved instanceof PsiMethod) {
+                    PsiMethod resolvedMethod = (PsiMethod) resolved;
+                    PsiClass containingClass = resolvedMethod.getContainingClass();
+                    if (containingClass != null && (containingClass.equals(serviceClass) ||
+                            (serviceClass.isInterface() && isImplementationOf(containingClass, serviceClass)))) {
+                        usesService[0] = true;
                     }
                 }
             }
-        }
+        });
+
+        return usesService[0];
     }
 
     /**
-     * 直接搜索所有Controller方法
+     * 判斷一個類是否是指定接口的實現類
      */
-    private void searchAllControllerMethods(Project project, PsiClass serviceClass, Map<String, String> result) {
-        try {
-            JavaPsiFacade psiFacade = JavaPsiFacade.getInstance(project);
-            GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
-
-            // 搜索所有Controller
-            PsiClass[] controllers = psiFacade.findClasses("*Controller", scope);
-            System.out.println("搜索所有Controller方法，找到 " + controllers.length + " 個Controller類");
-
-            String serviceClassName = serviceClass.getName();
-            // 服務類名的首字母小寫版本 (如AbcService -> abcService)
-            String serviceFieldName = serviceClassName.substring(0, 1).toLowerCase() +
-                    serviceClassName.substring(1);
-
-            for (PsiClass controller : controllers) {
-                System.out.println("檢查Controller: " + controller.getName());
-
-                // 檢查所有方法
-                for (PsiMethod method : controller.getMethods()) {
-                    if (method.getText().contains(serviceFieldName) ||
-                            method.getText().contains(serviceClassName)) {
-
-                        System.out.println("找到使用Service的方法: " + method.getName());
-
-                        // 檢查是否有API Mapping註解
-                        if (hasAPIMapping(method)) {
-                            System.out.println("該方法有API映射");
-
-                            // 檢查電文代號
-                            PsiDocComment docComment = method.getDocComment();
-                            if (docComment != null) {
-                                String docText = docComment.getText();
-                                Matcher matcher = API_ID_PATTERN.matcher(docText);
-                                if (matcher.find()) {
-                                    String apiId = matcher.group(1);
-                                    System.out.println("找到電文代號: " + apiId + ", 方法: " + method.getName());
-                                    result.put(method.getName(), apiId);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("搜索所有Controller方法時出錯: " + e.getMessage());
-            e.printStackTrace();
+    private boolean isImplementationOf(PsiClass cls, PsiClass interfaceClass) {
+        if (!interfaceClass.isInterface() || cls.isInterface()) {
+            return false;
         }
-    }
 
-    /**
-     * 檢查方法是否有API映射註解
-     */
-    private boolean hasAPIMapping(PsiMethod method) {
-        for (PsiAnnotation annotation : method.getModifierList().getAnnotations()) {
-            String name = annotation.getQualifiedName();
-            if (name != null && (name.endsWith("Mapping") || name.contains("RequestMapping") ||
-                    name.contains("GetMapping") || name.contains("PostMapping"))) {
-                System.out.println("方法有API映射: " + name + " 在方法: " + method.getName());
+        for (PsiClassType implementsType : cls.getImplementsListTypes()) {
+            PsiClass implemented = implementsType.resolve();
+            if (implemented != null && (implemented.equals(interfaceClass) ||
+                    isImplementationOf(implemented, interfaceClass))) {
                 return true;
             }
         }
-        return false;
+
+        // 檢查父類
+        PsiClass superClass = cls.getSuperClass();
+        return superClass != null && isImplementationOf(superClass, interfaceClass);
     }
 
     /**
@@ -521,5 +558,16 @@ public class ServiceLinkInspection extends AbstractBaseJavaLocalInspectionTool {
                 e.printStackTrace();
             }
         }
+    }
+
+    /**
+     * 從Javadoc文字中提取電文代號
+     */
+    private String extractApiIdFromDoc(String docText) {
+        Matcher matcher = API_ID_PATTERN.matcher(docText);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
     }
 }

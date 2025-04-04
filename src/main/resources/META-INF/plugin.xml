@@ -32,6 +32,12 @@
                          level="WARNING"
                          shortName="ServiceLinkInspection"
                          implementationClass="com.cathaybk.codingassistant.inspection.ServiceLinkInspection"/>
+                         
+        <!-- 註冊同步電文代號到相關類的意圖動作 -->
+        <intentionAction>
+            <className>com.cathaybk.codingassistant.actions.SyncApiIdAction</className>
+            <category>CathayBk 開發助手</category>
+        </intentionAction>
     </extensions>
 
     <actions>

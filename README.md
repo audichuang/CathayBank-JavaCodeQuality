@@ -78,7 +78,3 @@
 3. 提交你的更改 (`git commit -m 'Add some amazing feature'`)
 4. 推送到分支 (`git push origin feature/amazing-feature`)
 5. 打開 Pull Request
-
-## 授權協議
-
-此專案僅供國泰銀行內部使用，未經許可不得外傳。
